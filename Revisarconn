@@ -1,0 +1,100 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from pymongo import MongoClient
+import gridfs
+import base64
+from bson import ObjectId
+
+# Inicializar la app Flask
+app = Flask(__name__)
+CORS(app)  # Permitir CORS para llamadas AJAX desde el frontend
+
+# ---------- Conexión a PostgreSQL ----------
+try:
+    conn_pg = psycopg2.connect(
+        host="localhost",
+        database="personas_db",
+        user="postgres",
+        password="2205",
+        port="5432"
+    )
+    print("✅ Conexión a PostgreSQL exitosa.")
+except Exception as e:
+    print("❌ Error al conectar a PostgreSQL:", e)
+
+
+# ---------- Conexión a MongoDB ----------
+try:
+    client_mongo = MongoClient("mongodb://localhost:27017/")
+    db_mongo = client_mongo["fotos_db"]
+    fs = gridfs.GridFS(db_mongo)
+    print("✅ Conexión a MongoDB exitosa.")
+except Exception as e:
+    print("❌ Error al conectar a MongoDB:", e)
+
+
+# ---------- Endpoint para guardar datos ----------
+@app.route('/api/guardar_datos', methods=['POST'])
+def guardar_datos():
+    try:
+        data = request.json
+        id_persona = data.get("id_persona")
+        nombre = data.get("nombre")
+        apellido = data.get("apellido")
+        foto_base64 = data.get("fotoBase64")
+
+        # Guardar imagen en MongoDB
+        foto_bytes = base64.b64decode(foto_base64)
+        foto_id = fs.put(foto_bytes, filename=f"foto_{id_persona}.jpg")
+
+        # Guardar datos en PostgreSQL
+        cur = conn_pg.cursor()
+        cur.execute(
+            "INSERT INTO personas (id_persona, nombre, apellido, foto_gridfs_id) VALUES (%s, %s, %s, %s)",
+            (id_persona, nombre, apellido, str(foto_id))
+        )
+        conn_pg.commit()
+        cur.close()
+
+        return jsonify({"mensaje": "Datos guardados correctamente", "mongo_id": str(foto_id)}), 200
+
+    except Exception as e:
+        print("❌ Error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------- Endpoint para obtener datos ----------
+@app.route('/api/obtener_datos', methods=['GET'])
+def obtener_datos():
+    try:
+        cur = conn_pg.cursor()
+        cur.execute("SELECT id_persona, nombre, apellido, foto_gridfs_id FROM personas")
+        registros = cur.fetchall()
+        cur.close()
+
+        personas = []
+        for fila in registros:
+            id_persona, nombre, apellido, foto_id = fila
+
+            # Obtener la imagen desde MongoDB
+            foto_file = fs.get(ObjectId(foto_id))
+            foto_bytes = foto_file.read()
+            foto_base64 = base64.b64encode(foto_bytes).decode("utf-8")
+
+            personas.append({
+                "id_persona": id_persona,
+                "nombre": nombre,
+                "apellido": apellido,
+                "fotoBase64": foto_base64
+            })
+
+        return jsonify(personas), 200
+
+    except Exception as e:
+        print("❌ Error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
